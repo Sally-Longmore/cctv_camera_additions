@@ -1,0 +1,206 @@
+REPOSITORY STRUCTURE (GitHub):
+
+    camera-password-manager/
+    ├── .github/
+    │   └── workflows/
+    │       ├── ci.yml                  # lint, test on PR
+    │       └── cd.yml                  # ArgoCD sync on merge to main
+    ├── central/
+    │   ├── webapp/
+    │   │   ├── frontend/
+    │   │   │   ├── index.html          # single page, clean layout
+    │   │   │   ├── style.css
+    │   │   │   └── app.js
+    │   │   ├── backend/
+    │   │   │   ├── main.py             # FastAPI
+    │   │   │   ├── auth.py             # Entra ID / MSAL
+    │   │   │   ├── api/
+    │   │   │   │   ├── sites.py        # list sites, site status
+    │   │   │   │   ├── accounts.py     # approved accounts management
+    │   │   │   │   └── passwords.py    # temp password generation
+    │   │   │   ├── models.py           # data models
+    │   │   │   └── audit.py            # structured logging
+    │   │   ├── Dockerfile
+    │   │   └── requirements.txt
+    │   └── k8s/
+    │       ├── deployment.yaml
+    │       ├── service.yaml
+    │       ├── ingress.yaml
+    │       └── secrets.yaml            # sealed secrets
+    ├── site-agent/
+    │   ├── agent.py                    # main agent loop
+    │   ├── onvif_manager.py            # camera ONVIF operations
+    │   ├── account_enforcer.py         # enforce approved accounts
+    │   ├── expiry_manager.py           # temp password expiry thread
+    │   ├── config_manager.py           # local config, offline support
+    │   ├── comms.py                    # central API communication
+    │   ├── crypto.py                   # encryption/decryption
+    │   ├── audit.py                    # local structured logging
+    │   ├── Dockerfile
+    │   └── requirements.txt
+    └── k8s/
+        ├── central/
+        │   └── kustomization.yaml
+        └── sites/
+            ├── site-template/
+            │   ├── deployment.yaml
+            │   ├── configmap.yaml
+            │   └── kustomization.yaml
+            ├── site-001/
+            │   ├── configmap.yaml      # site specific config
+            │   └── kustomization.yaml  # inherits from template
+            └── site-002/
+                ├── configmap.yaml
+                └── kustomization.yaml
+
+
+WEB APP UI FLOW:
+
+    PAGE LOAD:
+        - Redirect to Entra ID login if not authenticated
+        - Check group membership, reject if not authorised
+        - Load list of sites from API
+
+    MAIN PAGE:
+        ┌─────────────────────────────────────┐
+        │  Camera Password Manager            │
+        │  Logged in as: user@company.com     │
+        ├─────────────────────────────────────┤
+        │  Site:     [dropdown - site list ]  │
+        │  Account:  [dropdown - populated   ]│
+        │            [when site selected     ]│
+        │  Duration: [1 day] [2 days] [5 days]│
+        │                                     │
+        │  [ Generate Password ]              │
+        ├─────────────────────────────────────┤
+        │  RESULT (shown after generation):   │
+        │  Password:  Xk9#mP2$vL4nQr8!        │
+        │  Expires:   2024-01-06 14:32:00     │
+        │  Site:      Site 001                │
+        │  Account:   installer               │
+        │                                     │
+        │  ⚠ This password will not be        │
+        │    shown again                      │
+        └─────────────────────────────────────┘
+
+    ACCOUNT DROPDOWN:
+        - Populated based on approved_accounts
+        - Excludes protected accounts (admin, viewer)
+        - Only shows accounts valid for temp access
+
+
+SITE AGENT - OFFLINE BEHAVIOUR:
+
+    LOCAL STATE FILE (encrypted JSON):
+        {
+            "last_sync": "2024-01-01T12:00:00",
+            "approved_accounts": [...],     # last known good config
+            "temp_access": [...],           # active temp passwords
+            "cameras": [...],               # local camera list
+            "pending_sync": [...]           # actions to sync when back online
+        }
+
+    ONLINE:
+        - Pull config delta from central on startup
+        - Pull config delta every 60 mins
+        - Push status heartbeat every 60 mins
+        - Push audit logs every 60 mins (batched)
+        - Receive temp password requests in real time
+
+    OFFLINE:
+        - Continue enforcing approved_accounts from last known config
+        - Continue expiry thread, reset passwords as they expire
+        - Queue audit logs locally
+        - Queue status updates locally
+        - When back online, flush queue to central
+
+    COMMS PATTERN:
+        - Site agent always initiates connection (no inbound ports needed)
+        - Central API is the only thing that needs to be publicly reachable
+        - Site agent polls for pending commands (temp password requests)
+            GET /api/v1/sites/{site_id}/pending
+        - Reduces need for central to push to sites
+
+
+TEMP PASSWORD FLOW:
+
+    CENTRAL:
+        1. User requests temp password via web app
+        2. Backend generates secure password (secrets module)
+           - 16 chars minimum
+           - Upper, lower, numbers, symbols
+        3. Backend stores in central DB:
+            {
+                "request_id": "uuid",
+                "site_id": "site-001",
+                "username": encrypted(username),
+                "password": encrypted(password),  # for re-push if needed
+                "expiry": "2024-01-06T14:32:00",
+                "requested_by": "user@company.com",
+                "status": "pending"
+            }
+        4. Password returned to web app, displayed once, never again
+        5. Request marked as "delivered"
+
+    SITE AGENT:
+        1. Polls central for pending commands
+        2. Receives temp password request
+        3. Decrypts password
+        4. Sets password on all local cameras via ONVIF
+        5. Stores in local state (encrypted)
+        6. Confirms back to central (status: "applied")
+
+    EXPIRY:
+        1. Expiry thread runs every 60 mins
+        2. Checks local state for expired temp passwords
+        3. Generates new random password (not stored, not returned)
+        4. Sets new password on all cameras
+        5. Removes from local state
+        6. Logs expiry event
+        7. Notifies central (status: "expired")
+
+
+LOGGING STRUCTURE (SIEM-ready from day one):
+
+    {
+        "timestamp": "2024-01-01T12:00:00Z",
+        "level": "INFO",
+        "event_type": "TEMP_ACCESS_GRANTED",
+        "site_id": "site-001",
+        "username": "installer",
+        "requested_by": "user@company.com",
+        "expiry": "2024-01-06T14:32:00Z",
+        "source_ip": "1.2.3.4",
+        "request_id": "uuid"
+    }
+
+    EVENT TYPES:
+        TEMP_ACCESS_GRANTED
+        TEMP_ACCESS_EXPIRED
+        TEMP_ACCESS_RESET
+        ACCOUNT_CREATED
+        ACCOUNT_DELETED
+        ACCOUNT_MODIFIED
+        ACCOUNT_ENFORCED
+        CAMERA_CONNECTED
+        CAMERA_UNREACHABLE
+        CONFIG_SYNCED
+        AGENT_STARTED
+        AGENT_OFFLINE
+        AGENT_ONLINE
+        AUTH_SUCCESS
+        AUTH_FAILURE
+        UNAUTHORISED_ACCESS_ATTEMPT
+
+
+SECRETS MANAGEMENT:
+
+    Kubernetes Sealed Secrets:
+        - Encryption keys
+        - Entra ID client secret
+        - Central API shared secret (site agent auth)
+
+    Never in Git:
+        - Any plaintext secrets
+        - Camera credentials
+        - Generated passwords
