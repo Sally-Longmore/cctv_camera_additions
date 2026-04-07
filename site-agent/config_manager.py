@@ -1,5 +1,6 @@
 import os
 import json
+import socket
 import crypto
 from datetime import datetime, timezone, timedelta
 
@@ -176,7 +177,7 @@ class User:
     def __str__(self) -> str:
         return f"User(username={self.username}, user_level={self.user_level}, temp_access={self.temp_access})"
 
-class Approved_Accounts:
+class ApprovedAccounts:
     def __init__(self):
         self._users: list[User] = []
 
@@ -232,7 +233,7 @@ class TempAccess:
         self.requested_time = None
 
     # Load and desearlise Temp Access
-    def load(self, temp_access_json: json, approved_accounts: Approved_Accounts):
+    def load(self, temp_access_json: json, approved_accounts: ApprovedAccounts):
         self.user = approved_accounts.get(temp_access_json["username"])
         self.requested_by = temp_access_json["requested_by"]
         self.requested_id = temp_access_json["requested_id"]
@@ -248,6 +249,9 @@ class TempAccess:
             "expiry": self.expiry.isoformat() if self.expiry else datetime.now().isoformat()
         }
         return temp_access_dict
+
+    def get_user(self) -> User:
+        return self.user
 
     def add(self, user: User, requested_by: str, requested_id: str, req_days: int):
         if req_days > 5:
@@ -373,6 +377,13 @@ class Camera:
         self.last_seen = datetime.now(timezone.utc)
         self.last_updated = datetime.now(timezone.utc)
 
+    def online(self):
+        try:
+            socket.create_connection((self.ip, self.port), timeout=2).close()
+            return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
+
     def update_last_seen(self):
         self.last_seen = datetime.now(timezone.utc)
 
@@ -400,6 +411,9 @@ class Cameras:
         for camera in self._cameras:
             if identifier == camera.hostname:
                 return camera
+        for camera in self._cameras:
+            if identifier == camera.ip:
+                return camera
         return None
     
     def exists(self, identifier: str):
@@ -409,6 +423,9 @@ class Cameras:
         for camera in self._cameras:
             if identifier == camera.hostname:
                 return True
+        for camera in self._cameras:
+            if identifier == camera.ip:
+                return camera
         return False
     
     def remove(self, identifier: str):
@@ -439,7 +456,7 @@ class Config:
     def __init__(self):
         self.password_policy = PasswordPolicy()
         self.site = Site()
-        self.approved_accounts = Approved_Accounts()
+        self.approved_accounts = ApprovedAccounts()
         self.temp_access_requests = TempAccessRequests()
         self.cameras = Cameras()
 
