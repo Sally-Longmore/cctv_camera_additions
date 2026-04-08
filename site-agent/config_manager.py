@@ -342,27 +342,38 @@ class TempAccessRequests:
     def __repr__(self):
         return self.__str__()
 
-# Network Interface Information for Cameras
-class NetworkInformation:
+class IPConfig:
     def __init__(self):
-        self.interface = None
-        self.mac = None
-        self.manual_ip = None
+        self.manual = None
         self.manual_prefix_length = None
         self.dhcp_ip = None
-        self.dhcp_prefix_length = None
+        self.dhcp_prefix_lenght = None
         self.linklocal_address = None
         self.linklocal_prefix_length = None
-        self.default_gateway = None
+
+class DNSConfig:
+    def __init__(self):
+        self.from_dhcp = None
+        self.dhcp_addresses: list[str] = []
+
+class Protocols:
+    def __init__(self):
         self.http = None
         self.http_ports = None
         self.https = None
         self.https_ports = None
         self.rtsp = None
         self.rtsp_ports = None
-        self.dns_from_dhcp = None
-        self.dns_dhcp_addresses = None
-        self.dns_manual_addresses = None
+
+# Network Interface Information for Cameras
+class NetworkInformation:
+    def __init__(self):
+        self.interface = None
+        self.mac = None
+        self.default_gateway = None
+        self.ip = IPConfig()
+        self.dns = DNSConfig()
+        self.protocols = Protocols()
 
 # Class used to store Cameras
 class Camera:
