@@ -2,6 +2,7 @@ import os
 import json
 import socket
 import crypto
+import ipaddress
 from datetime import datetime, timezone, timedelta
 
 CONFIG_FILE = os.getenv("SITE_AGENT_CONFIG_FILE")
@@ -21,11 +22,11 @@ class PasswordPolicy:
 
     # Load and deseralise password policy
     def load(self, password_policy_json: json):
-        self.uppercase = password_policy_json["uppercase"]
-        self.lowercase = password_policy_json["lowercase"]
-        self.digits = password_policy_json["digits"]
-        self.special_chars = password_policy_json["special_chars"]
-        self.length = password_policy_json["length"]
+        self.uppercase = password_policy_json.get("uppercase")
+        self.lowercase = password_policy_json.get("lowercase")
+        self.digits = password_policy_json.get("digits")
+        self.special_chars = password_policy_json.get("special_chars")
+        self.length = password_policy_json.get("length")
 
     def save(self) -> dict:
         password_policy_dict = {
@@ -43,6 +44,11 @@ class PasswordPolicy:
     def __str__(self) -> str:
         return f"PasswordPolicy(uppercase={self.uppercase}, lowercase={self.lowercase}, digits={self.digits}, special_chars={self.special_chars}, length={self.length})"
 
+class ScanRange:
+    def __init__(self, start, end):
+        self.start = ipaddress.IPv4Address(start)
+        self.end = ipaddress.IPv4Address(end)      
+
 # Class used to store site information
 class Site:
     def __init__(self):
@@ -50,16 +56,19 @@ class Site:
         self.site_id = None
         self.site_name = None
         self.camera_scan_range = None
-        self.camera_scan_interval = None
+        self.camera_scan_interval_hours = None
+        self.camera_max_days_offline = None
         self.last_camera_scan = None
 
     # Load and deseralise Sites
     def load(self, site_json: json):
         self.last_sync = datetime.fromisoformat(site_json["last_sync"]) if site_json["last_sync"] else None
-        self.site_id = site_json["site_id"]
-        self.site_name = site_json["site_name"]
-        self.camera_scan_range = site_json["camera_scan_range"]
-        self.camera_scan_interval = site_json["camera_scan_interval"]
+        self.site_id = site_json.get("site_id")
+        self.site_name = site_json.get("site_name")
+        camera_scan_range = site_json.get("camera_scan_range")
+        self.camera_scan_range = ScanRange(camera_scan_range["start"], camera_scan_range["end"])
+        self.camera_scan_interval_hours = site_json.get("camera_scan_interval_hours")
+        self.camera_max_days_offline = site_json.get("camera_max_days_offline")
         self.last_camera_scan = datetime.fromisoformat(site_json["last_camera_scan"]) if site_json["last_camera_scan"] else None
         Password.site_id = self.site_id
 
@@ -69,17 +78,18 @@ class Site:
             "site_id": self.site_id,
             "site_name": self.site_name,
             "camera_scan_range": self.camera_scan_range,
-            "camera_scan_interval": self.camera_scan_interval,
+            "camera_scan_interval": self.camera_scan_interval_hours,
+            "camera_max_days_offline": self.camera_max_days_offline,
             "last_camera_scan": self.last_camera_scan.isoformat() if self.last_camera_scan else None
         }
         return site_dict
 
-    def add(self, site_id: str, site_name: str, camera_scan_range: str, camera_scan_interval: int):
+    def add(self, site_id: str, site_name: str, camera_scan_range: str, camera_scan_interval_hours: int):
         self.last_sync = None
         self.site_id = site_id
         self.site_name = site_name
         self.camera_scan_range = camera_scan_range
-        self.camera_scan_interval = camera_scan_interval
+        self.camera_scan_interval_hours = camera_scan_interval_hours
         self.last_camera_scan = None
         Password.site_id = self.site_id
 
@@ -124,6 +134,7 @@ class Password:
 class User:
     def __init__(self):
         self.username = None
+        self.alt_usernames: list[str] = []
         self.password = None
         self.user_level = None
         self.temp_access = None
@@ -133,10 +144,12 @@ class User:
 
     # Load and deseralise user
     def load(self, user_json: json):
-        self.username = user_json["username"]
+        self.username = user_json.get("username")
+        for alt_username in user_json.get("alt_usernames", []):
+            self.alt_usernames.append(alt_username)
         self.password = Password(user_json["password"])
-        self.user_level = user_json["user_level"]
-        self.temp_access = user_json["temp_access"]
+        self.user_level = user_json.get("user_level")
+        self.temp_access = user_json.get("temp_access")
         self.last_modified = datetime.fromisoformat(user_json["last_modified"]) if user_json["last_modified"] else None
         for prev_password in user_json.get("previous_passwords", []):
             self.add_previous_password(prev_password)
@@ -146,6 +159,7 @@ class User:
     def save(self) -> dict:
         user_dict = {
             "username": self.username,
+            "alt_usernames": list(self.alt_usernames) if self.alt_usernames else [],
             "password": self.password.get_original(),
             "user_level": self.user_level,
             "temp_access": self.temp_access,
@@ -155,8 +169,9 @@ class User:
         }
         return user_dict
 
-    def add(self, username: str, password: str, user_level: str, temp_access: str):
+    def add(self, username: str, password: str, user_level: str, temp_access: str, alt_usernames: list[str] = None):
         self.username = username
+        self.alt_usernames = alt_usernames
         self.password = Password(password)
         self.user_level = user_level
         self.temp_access = temp_access
@@ -235,8 +250,8 @@ class TempAccess:
     # Load and desearlise Temp Access
     def load(self, temp_access_json: json, approved_accounts: ApprovedAccounts):
         self.user = approved_accounts.get(temp_access_json["username"])
-        self.requested_by = temp_access_json["requested_by"]
-        self.requested_id = temp_access_json["requested_id"]
+        self.requested_by = temp_access_json.get("requested_by")
+        self.requested_id = temp_access_json.get("requested_id")
         self.requested_time = datetime.fromisoformat(temp_access_json["requested_time"]) if temp_access_json["requested_time"] else None
         self.expiry = datetime.fromisoformat(temp_access_json["expiry"]) if temp_access_json['expiry'] else None
 
@@ -327,6 +342,28 @@ class TempAccessRequests:
     def __repr__(self):
         return self.__str__()
 
+# Network Interface Information for Cameras
+class NetworkInformation:
+    def __init__(self):
+        self.interface = None
+        self.mac = None
+        self.manual_ip = None
+        self.manual_prefix_length = None
+        self.dhcp_ip = None
+        self.dhcp_prefix_length = None
+        self.linklocal_address = None
+        self.linklocal_prefix_length = None
+        self.default_gateway = None
+        self.http = None
+        self.http_ports = None
+        self.https = None
+        self.https_ports = None
+        self.rtsp = None
+        self.rtsp_ports = None
+        self.dns_from_dhcp = None
+        self.dns_dhcp_addresses = None
+        self.dns_manual_addresses = None
+
 # Class used to store Cameras
 class Camera:
     def __init__(self):
@@ -334,45 +371,46 @@ class Camera:
         self.port = None
         self.last_discovery = None
         self.manufacturer = None
-        self.model = None
+        self.onvif_model = None
         self.serial_number = None
+        self.firmware_version = None
         self.hostname = None
-        self.management_account = None
         self.last_seen = None
         self.last_updated = None
 
     # Load and desearlise Camera
     def load(self, camera_json: json):
-        self.ip = camera_json["ip"]
-        self.port = camera_json["port"]
-        self.manufacturer = camera_json["manufacturer"]
-        self.model = camera_json["model"]
-        self.serial_number = camera_json["serial_number"]
-        self.hostname = camera_json["hostname"]
-        self.management_account = camera_json["management_account"]
-        self.last_seen = datetime.fromisoformat(camera_json["last_seen"]) if camera_json["last_seen"] else None
-        self.last_updated = datetime.fromisoformat(camera_json["last_updated"]) if camera_json["last_updated"] else None
+        self.ip = camera_json.get("ip")
+        self.port = camera_json.get("port")
+        self.manufacturer = camera_json.get("manufacturer")
+        self.onvif_model = camera_json.get("onvif_model")
+        self.serial_number = camera_json.get("serial_number")
+        self.firmware_version = camera_json.get("firmware_version")
+        self.hostname = camera_json.get("hostname")
+        self.last_seen = datetime.fromisoformat(camera_json.get("last_seen")) if camera_json.get("last_seen") else None
+        self.last_updated = datetime.fromisoformat(camera_json.get("last_updated")) if camera_json.get("last_updated") else None
 
     def save(self) -> dict:
         camera_dict = {
             "ip": self.ip,
             "port": self.port,
-            "manufacturer": self.last_discovery,
-            "model": self.model,
+            "manufacturer": self.manufacturer,
+            "onvif_model": self.onvif_model,
             "serial_number": self.serial_number,
+            "firmware_version": self.firmware_version,
             "hostname": self.hostname,
-            "management_account": self.management_account,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "last_updated": self.last_updated.isoformat() if self.last_updated else None
         }
         return camera_dict
 
-    def add(self, ip: str, port: int, manufacturer: str, model: str, serial_number: str, hostname: str):
+    def add(self, ip: str, port: int, manufacturer: str, onvif_model: str, serial_number: str, firmware_version: str, hostname: str):
         self.ip = ip
         self.port = port
         self.manufacturer = manufacturer
-        self.model = model
+        self.onvif_model = onvif_model
         self.serial_number = serial_number
+        self.firmware_version = firmware_version
         self.hostname = hostname
         self.last_seen = datetime.now(timezone.utc)
         self.last_updated = datetime.now(timezone.utc)
@@ -388,10 +426,10 @@ class Camera:
         self.last_seen = datetime.now(timezone.utc)
 
     def __repr__(self) -> str:
-        return f"Camera(hostname={self.hostname}, ip={self.ip}, manufacturer={self.manufacturer}, model={self.model}), last_seen={self.last_seen}"
-    
+        return f"Camera(hostname={self.hostname}, ip={self.ip}, manufacturer={self.manufacturer}, onvif_model={self.onvif_model}, last_seen={self.last_seen})"
+
     def __str__(self) -> str:
-        return f"Camera(hostname={self.hostname}, ip={self.ip}, manufacturer={self.manufacturer}, model={self.model}), last_seen={self.last_seen}"    
+        return f"Camera(hostname={self.hostname}, ip={self.ip}, manufacturer={self.manufacturer}, onvif_model={self.onvif_model}, last_seen={self.last_seen})"    
 
 class Cameras:
     def __init__(self):
@@ -428,7 +466,7 @@ class Cameras:
                 return camera
         return False
     
-    def remove(self, identifier: str):
+    def remove(self, identifier):
         camera = self.get(identifier)
         if camera:
             self._cameras.remove(camera)
@@ -437,7 +475,7 @@ class Cameras:
             return 1
         
     def count(self):
-        return self._cameras.count()
+        return len(self._cameras)
     
     def __getitem__(self, index: int):
         return self._cameras[index]
@@ -450,6 +488,51 @@ class Cameras:
     
     def __repr__(self):
         return self.__str__()
+    
+class CameraModel:
+    def __init__(self):
+        self.manufacturer = None
+        self.onvif_model = None
+        self.model = None
+        self.model_line = None
+        self.management_account = None
+        self.reboot_required_on_change = False
+
+    def load(self, model_json: json):
+        self.manufacturer = model_json.get("manufacturer")
+        self.onvif_model = model_json.get("onvif_model")
+        self.model = model_json.get("model")
+        self.model_line = model_json.get("model_line")
+        self.management_account = model_json.get("management_account")
+        self.reboot_required_on_change = model_json.get("reboot_required_on_change")
+
+class CameraModels:
+    def __init__(self):
+        self._camera_models: list[CameraModel] = []
+
+    def add(self, camera_model: CameraModel):
+        self._camera_models.append(camera_model)
+
+    def get_model(self, identifier: str):
+        for camera_model in self._camera_models:
+            if identifier == camera_model.onvif_model:
+                return camera_model
+
+    def count(self):
+        return self._camera_models.count()
+    
+    def __getitem__(self, index: int):
+        return self._camera_models[index]
+    
+    def __iter__(self):
+        return iter(self._camera_models)
+    
+    def __str__(self):
+        return ", ".join(str(camera) for camera in self._camera_models)
+    
+    def __repr__(self):
+        return self.__str__()
+    
 
 # Class for storing the site-agent config
 class Config:
@@ -459,8 +542,10 @@ class Config:
         self.approved_accounts = ApprovedAccounts()
         self.temp_access_requests = TempAccessRequests()
         self.cameras = Cameras()
+        self.camera_models = CameraModels()
 
     def load(self) -> None:
+        self.__init__()
         try:
             with open(CONFIG_FILE, 'r') as config_file:
                 raw = config_file.read()
@@ -497,6 +582,12 @@ class Config:
                     camera = Camera()
                     camera.load(camera_json)
                     self.cameras.add(camera)
+
+                # Load Camera Models
+                for camera_model_json in json_data["camera_models"]:
+                    camera_model = CameraModel()
+                    camera_model.load(camera_model_json)
+                    self.camera_models.add(camera_model)
         
         except FileNotFoundError:
             raise FileNotFoundError(f"{CONFIG_FILE} does not exist.")

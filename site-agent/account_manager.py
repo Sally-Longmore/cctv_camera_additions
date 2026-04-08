@@ -1,6 +1,8 @@
 import onvif_manager
 import config_manager
 
+# Enforce approved accounts on cameras
+# Creates missing accounts and removes non approved accounts
 def enforce_accounts(config: config_manager.Config):
     # Connect to each camera and enabled
 
@@ -11,16 +13,19 @@ def enforce_accounts(config: config_manager.Config):
         if camera.online():
             print(f"Camera {camera.hostname} is online, enforcing accounts")
             # Find admin account in list of approved accounts
-            admin_user = config.approved_accounts.get(camera.management_account)
-            if admin_user == None:
-                raise ValueError(f"Camera admin_user {camera.management_account} does not exist.")
+            camera_model = config.camera_models.get_model(camera.onvif_model)
+            if camera_model is None:
+                raise ValueError(f"Unknown camera model {camera.onvif_model}, cannot determine management account.")
+            admin_user = config.approved_accounts.get(camera_model.management_account)
+            if admin_user is None:
+                raise ValueError(f"Camera management account {camera_model.management_account} does not exist in approved accounts.")
 
             # Logon to camera
             try:
                 camera_conn = onvif_manager.DeviceManagement(camera, admin_user)
             except ValueError: # Failed to logon to camera
                 return 1
-            
+
             # Check existing users on the camera and remove if not approved
             for user in camera_conn.get_users():
                 if not config.approved_accounts.exists(user.Username):
@@ -33,22 +38,26 @@ def enforce_accounts(config: config_manager.Config):
         else:
             print(f"Camera {camera.hostname} is offline")
 
+# Enforce current passwords for approved accounts
 def enforce_passwords(config: config_manager.Config):
     for camera in config.cameras:
         # Check if camera is online
         if camera.online():
             print(f"Camera {camera.hostname} is online, enforcing passwords")
             # Find admin account in list of approved accounts
-            admin_user = config.approved_accounts.get(camera.management_account)
-            if admin_user == None:
-                raise ValueError(f"Camera admin_user {camera.management_account} does not exist.")
+            camera_model = config.camera_models.get_model(camera.onvif_model)
+            if camera_model is None:
+                raise ValueError(f"Unknown camera model {camera.onvif_model}, cannot determine management account.")
+            admin_user = config.approved_accounts.get(camera_model.management_account)
+            if admin_user is None:
+                raise ValueError(f"Camera management account {camera_model.management_account} does not exist in approved accounts.")
 
             # Logon to camera
             try:
                 camera_conn = onvif_manager.DeviceManagement(camera, admin_user)
             except ValueError: # Failed to logon to camera
                 return 1
-        
+
             # Enforce passwords for all accounts that are not using Temp Access
             for user in config.approved_accounts:
                 # Check user exists

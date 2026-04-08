@@ -10,26 +10,36 @@ class DeviceManagementConnection(OnVif):
     sub_xaddr = "device_service"
     port = "DeviceBinding"
 
+
 class DeviceManagement():
 
-    def __init__(self, camera, user):
+    def __init__(self, camera, user = None):
         self.connection = None
         self.connect(camera, user)
 
     def connect(self, camera, user):
-        all_passwords = [user.password] + user.previous_passwords + user.default_passwords
-        for password in all_passwords:
+        if user == None:
             self.connection = DeviceManagementConnection(
-                ip=camera.ip, port=camera.port,
-                user=user.username, password=password.get()
+                ip=camera.ip, port=camera.port
             )
-            try:
-                self.connection.ws_client.GetUsers()
-                if password.get() != user.password.get():
-                    self.set_user_password(user.username, user.password.get())
-                return  # credentials worked, self.connection is set
-            except Fault:
-                continue
+            return
+
+        users = [user.username] + (user.alt_usernames or [])
+
+        for username in users:
+            all_passwords = [user.password] + user.previous_passwords + user.default_passwords
+            for password in all_passwords:
+                self.connection = DeviceManagementConnection(
+                    ip=camera.ip, port=camera.port,
+                    user=username, password=password.get()
+                )
+                try:
+                    self.connection.ws_client.GetUsers()
+                    if password.get() != user.password.get():
+                        self.set_user_password(user.username, user.password.get())
+                    return  # credentials worked, self.connection is set
+                except Fault:
+                    continue
         raise ValueError(f"Could not authenticate to {camera.ip}")
 
     # Test Credentials
@@ -98,7 +108,7 @@ class DeviceManagement():
         return self.connection.ws_client.GetDeviceInformation()
 
     def get_hostname(self):
-        return self.connection.ws_client.GetHostname()
+        return self.connection.ws_client.GetHostname().Name
 
     def set_hostname(self, hostname):
         return self.connection.ws_client.SetHostname(HostnameInformation=self.connection.factory.HostnameInformation(Name=hostname))
