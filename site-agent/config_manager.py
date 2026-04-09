@@ -11,6 +11,8 @@ if CONFIG_FILE is None:
 else:
     CONFIG_FILE = os.path.expanduser(CONFIG_FILE)
 
+CONFIG_PLAINTEXT = os.getenv("SITE_AGENT_PLAINTEXT") is not None
+
 # Password policy class
 class PasswordPolicy:
     def __init__(self):
@@ -77,8 +79,8 @@ class Site:
             "last_sync": self.last_sync.isoformat() if self.last_sync else None,
             "site_id": self.site_id,
             "site_name": self.site_name,
-            "camera_scan_range": self.camera_scan_range,
-            "camera_scan_interval": self.camera_scan_interval_hours,
+            "camera_scan_range": {"start": str(self.camera_scan_range.start), "end": str(self.camera_scan_range.end)} if self.camera_scan_range else None,
+            "camera_scan_interval_hours": self.camera_scan_interval_hours,
             "camera_max_days_offline": self.camera_max_days_offline,
             "last_camera_scan": self.last_camera_scan.isoformat() if self.last_camera_scan else None
         }
@@ -347,23 +349,99 @@ class IPConfig:
         self.manual = None
         self.manual_prefix_length = None
         self.dhcp_ip = None
-        self.dhcp_prefix_lenght = None
+        self.dhcp_prefix_length = None
         self.linklocal_address = None
         self.linklocal_prefix_length = None
+
+    def save(self) -> dict:
+        return {
+            "manual": self.manual,
+            "manual_prefix_length": self.manual_prefix_length,
+            "dhcp_ip": self.dhcp_ip,
+            "dhcp_prefix_length": self.dhcp_prefix_length,
+            "linklocal_address": self.linklocal_address,
+            "linklocal_prefix_length": self.linklocal_prefix_length
+        }
+
+    def load(self, ipv4_config):
+        from_dhcp = getattr(ipv4_config, 'FromDHCP', None)
+        if from_dhcp:
+            self.dhcp_ip = getattr(from_dhcp, 'Address', None)
+            self.dhcp_prefix_length = getattr(from_dhcp, 'PrefixLength', None)
+        linklocal = getattr(ipv4_config, 'LinkLocal', None)
+        if linklocal:
+            self.linklocal_address = getattr(linklocal, 'Address', None)
+            self.linklocal_prefix_length = getattr(linklocal, 'PrefixLength', None)
+        manual = getattr(ipv4_config, 'Manual', None) or []
+        if manual:
+            self.manual = getattr(manual[0], 'Address', None)
+            self.manual_prefix_length = getattr(manual[0], 'PrefixLength', None)
 
 class DNSConfig:
     def __init__(self):
         self.from_dhcp = None
         self.dhcp_addresses: list[str] = []
+        self.manual_addresses: list[str] = []
+
+    def load(self, dns):
+        self.from_dhcp = getattr(dns, 'FromDHCP', None)
+        self.dhcp_addresses = [
+            getattr(e, 'IPv4Address', None) 
+            for e in getattr(dns, 'DNSFromDHCP', [])
+            if getattr(e, 'IPv4Address', None)
+            ]
+        self.manual_addresses = [
+            getattr(e, 'IPv4Address', None)
+            for e in getattr(dns, 'DNSManual', [])
+            if getattr(e, 'IPv4Address', None)
+            ]
+
+    def save(self) -> dict:
+        return {
+            "from_dhcp": self.from_dhcp,
+            "dhcp_addresses": self.dhcp_addresses,
+            "manual_addresses": self.manual_addresses
+        }
+
+class Protocol:
+    def __init__(self):
+        self.name = None
+        self.enabled = None
+        self.ports: list[int] = []
+
+    def load(self, protocol):
+        self.name = getattr(protocol, 'Name', None)
+        self.enabled = getattr(protocol, 'Enabled', None)
+        self.ports = getattr(protocol, 'Port', []) or []
+
+    def save(self) -> dict:
+        return {
+            "name": self.name,
+            "enabled": self.enabled,
+            "ports": self.ports
+        }
 
 class Protocols:
     def __init__(self):
-        self.http = None
-        self.http_ports = None
-        self.https = None
-        self.https_ports = None
-        self.rtsp = None
-        self.rtsp_ports = None
+        self._protocols: list[Protocol] = []
+
+    def load(self, protocols):
+        for protocol in protocols:
+            p = Protocol()
+            p.load(protocol)
+            self._protocols.append(p)
+
+    def get(self, name: str):
+        for p in self._protocols:
+            if p.name == name:
+                return p
+        return None
+
+    def save(self) -> list:
+        return [p.save() for p in self._protocols]
+
+    def __iter__(self):
+        return iter(self._protocols)
 
 # Network Interface Information for Cameras
 class NetworkInformation:
@@ -374,6 +452,24 @@ class NetworkInformation:
         self.ip = IPConfig()
         self.dns = DNSConfig()
         self.protocols = Protocols()
+
+    def load(self, interface):
+        self.interface = interface.Info.Name
+        self.mac = interface.Info.HwAddress
+        ipv4 = getattr(interface, 'IPv4', None)
+        ipv4_config = getattr(ipv4, 'Config', None) if ipv4 else None
+        if ipv4_config:
+            self.ip.load(ipv4_config)
+
+    def save(self) -> dict:
+        return {
+            "interface": self.interface,
+            "mac": self.mac,
+            "default_gateway": self.default_gateway,
+            "ip": self.ip.save(),
+            "dns": self.dns.save(),
+            "protocols": self.protocols.save()
+        }
 
 # Class used to store Cameras
 class Camera:
@@ -386,6 +482,8 @@ class Camera:
         self.serial_number = None
         self.firmware_version = None
         self.hostname = None
+        self.camera_name = None
+        self.network_information: list[NetworkInformation] = []
         self.last_seen = None
         self.last_updated = None
 
@@ -398,6 +496,7 @@ class Camera:
         self.serial_number = camera_json.get("serial_number")
         self.firmware_version = camera_json.get("firmware_version")
         self.hostname = camera_json.get("hostname")
+        self.camera_name = camera_json.get("camera_name")
         self.last_seen = datetime.fromisoformat(camera_json.get("last_seen")) if camera_json.get("last_seen") else None
         self.last_updated = datetime.fromisoformat(camera_json.get("last_updated")) if camera_json.get("last_updated") else None
 
@@ -410,8 +509,10 @@ class Camera:
             "serial_number": self.serial_number,
             "firmware_version": self.firmware_version,
             "hostname": self.hostname,
+            "camera_name": self.camera_name,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
-            "last_updated": self.last_updated.isoformat() if self.last_updated else None
+            "last_updated": self.last_updated.isoformat() if self.last_updated else None,
+            "network_information": [ni.save() for ni in self.network_information]
         }
         return camera_dict
 
@@ -517,6 +618,16 @@ class CameraModel:
         self.management_account = model_json.get("management_account")
         self.reboot_required_on_change = model_json.get("reboot_required_on_change")
 
+    def save(self) -> dict:
+        return {
+            "manufacturer": self.manufacturer,
+            "onvif_model": self.onvif_model,
+            "model": self.model,
+            "model_line": self.model_line,
+            "management_account": self.management_account,
+            "reboot_required_on_change": self.reboot_required_on_change
+        }
+
 class CameraModels:
     def __init__(self):
         self._camera_models: list[CameraModel] = []
@@ -595,7 +706,7 @@ class Config:
                     self.cameras.add(camera)
 
                 # Load Camera Models
-                for camera_model_json in json_data["camera_models"]:
+                for camera_model_json in json_data.get("camera_models", []):
                     camera_model = CameraModel()
                     camera_model.load(camera_model_json)
                     self.camera_models.add(camera_model)
@@ -614,11 +725,12 @@ class Config:
                 "site": self.site.save(),
                 "approved_accounts": [user.save() for user in self.approved_accounts],
                 "temp_access": [request.save() for request in self.temp_access_requests],
-                "cameras": [camera.save() for camera in self.cameras]
-            })
-            encrypted = crypto.encrypt(json_string)
+                "cameras": [camera.save() for camera in self.cameras],
+                "camera_models": [camera_model.save() for camera_model in self.camera_models]
+            }, indent=4)
+            output = json_string if CONFIG_PLAINTEXT else crypto.encrypt(json_string)
             with open(CONFIG_FILE, 'w') as config_file:
-                config_file.write(encrypted)
+                config_file.write(output)
         except Exception as e:
             raise ValueError(f"Failed to save config: {e}")
 

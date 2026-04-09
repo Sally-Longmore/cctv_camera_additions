@@ -6,7 +6,8 @@
             "request": "launch",
             "program": "${file}",
             "env": {
-                "SITE_AGENT_CONFIG_FILE": "~/git/camerapassword/site-agent/site-agent_new.cfg"
+                "SITE_AGENT_CONFIG_FILE": "~/git/camerapassword/site-agent/site-agent_new.cfg",
+                "SITE_AGENT_PLAINTEXT": "1"
             }
         }
     ]

@@ -111,7 +111,7 @@ class DeviceManagement():
         return self.connection.ws_client.GetHostname().Name
 
     def set_hostname(self, hostname):
-        return self.connection.ws_client.SetHostname(HostnameInformation=self.connection.factory.HostnameInformation(Name=hostname))
+        return self.connection.ws_client.SetHostname(Name=hostname)
 
     # -- Camera Network Functions --
     def get_network_interfaces(self):

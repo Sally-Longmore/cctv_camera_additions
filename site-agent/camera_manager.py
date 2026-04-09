@@ -28,6 +28,11 @@ def scan_camera(camera, admin_user: list[str]):
 
     # Get hostname
     camera.hostname = camera_conn.get_hostname()
+    camera_name = str(camera.camera_name).lower().replace(" ", "-")
+    camera_name = ''.join(c for c in camera_name if c.isalnum() or c == '-')
+    if getattr(camera, "camera_name", None) and camera.hostname != camera_name:
+        camera_conn.set_hostname(camera_name)
+        camera.hostname = camera_conn.get_hostname()
 
     # Get Manufacture and Model
     device_info = camera_conn.get_device_info()
@@ -35,12 +40,20 @@ def scan_camera(camera, admin_user: list[str]):
     camera.onvif_model = device_info.Model
     camera.serial_number = device_info.SerialNumber
     camera.firmware_version = device_info.FirmwareVersion
-    
+
+    # Get Network Information
+    for network_if in camera_conn.get_network_interfaces():
+        net_info = config_manager.NetworkInformation()
+        net_info.load(network_if)
+        net_info.dns.load(camera_conn.get_dns())
+        net_info.protocols.load(camera_conn.get_network_protocols())
+        camera.network_information.append(net_info)
+
     # Set last seen and last updted tmie
     camera.last_seen = datetime.now(timezone.utc)
     camera.last_updated = datetime.now(timezone.utc)
 
-# Detects cameras in the IP address range
+# Detects cameras in the IP address range6
 # and then scans the cameras for information
 def detect(config: config_manager.Config):
     # Iterate through the IP address range
@@ -79,8 +92,8 @@ def detect(config: config_manager.Config):
             else:
                 print(f"Failed find a camera at IP address {ipaddress.IPv4Address(ip)}")
 
-        except:
-            print(f"Failed find a camera at IP address {ipaddress.IPv4Address(ip)}")
+        except Exception as e:
+            print(f"Failed find a camera at IP address {ipaddress.IPv4Address(ip)}: {e}")
                         
 
 # Scans existing cameras to see if they are still online
@@ -114,3 +127,19 @@ def remove_stale_cameras(config):
 
     for camera in stale_cameras:
         config.cameras.remove(camera.serial_number)
+
+
+
+
+config = config_manager.Config()
+config.load()
+detect(config)
+scan_existing(config)
+remove_stale_cameras(config)
+
+config.save()
+
+print("here")
+
+#enforce_accounts(config)
+#enforce_passwords(config)

@@ -75,7 +75,11 @@ def enforce_passwords(config: config_manager.Config):
         else:
             print(f"Camera {camera.hostname} is offline.")
 
-config = config_manager.Config()
-config.load()
-enforce_accounts(config)
-enforce_passwords(config)
+# Now to work on Temp Access....
+#def create_temp_access(config: config_manager.Config, username, expiry, requested_by, requested_id):
+
+
+# config = config_manager.Config()
+# config.load()
+# enforce_accounts(config)
+# enforce_passwords(config)
