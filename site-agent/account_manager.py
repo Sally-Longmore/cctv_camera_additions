@@ -39,7 +39,7 @@ def enforce_accounts(config: config_manager.Config):
             print(f"Camera {camera.hostname} is offline")
 
 # Enforce current passwords for approved accounts
-def enforce_passwords(config: config_manager.Config):
+def enforce_passwords(config: config_manager.Config, username: str = None):
     for camera in config.cameras:
         # Check if camera is online
         if camera.online():
@@ -59,11 +59,20 @@ def enforce_passwords(config: config_manager.Config):
                 return 1
 
             # Enforce passwords for all accounts that are not using Temp Access
-            for user in config.approved_accounts:
+            if username == None:
+                users = config.approved_accounts
+            else:
+                user = config.approved_accounts.get(username)
+                if user is None:
+                    raise ValueError(f"User {username} does not exist in approved accounts.")
+                users = [user]
+                        
+            for user in users:
                 # Check user exists
                 if not camera_conn.get_user(user.username):
                     raise ValueError (f"User {user.username} does not exist")
 
+                print(f"Temp access exists for {user.username}: {config.temp_access_requests.exists(user.username)}")
                 # Check if user is currently using Temp Access
                 if config.temp_access_requests.exists(user.username):
                     # Set account to temp access password
@@ -72,12 +81,54 @@ def enforce_passwords(config: config_manager.Config):
                 else:
                     # Set account password to normal password
                     camera_conn.set_user_password(user.username, user.password.get())
+
+            if config.camera_models.get_model(camera.onvif_model).reboot_on_user_change:
+                camera_conn.reboot()
+
         else:
             print(f"Camera {camera.hostname} is offline.")
 
 # Now to work on Temp Access....
-#def create_temp_access(config: config_manager.Config, username, expiry, requested_by, requested_id):
+def create_temp_access(config: config_manager.Config, username, requested_days, requested_by, requested_id):
+    # Check if there is an existing temp access for user, then add or update
+    
+    temp_request = config.temp_access_requests.get(username)
+    password = None
 
+    if temp_request == None:
+        temp_request = config_manager.TempAccess()
+        user = config.approved_accounts.get(username)
+        temp_request.add(user, requested_by, requested_id, requested_days)
+        # Set a random password for the user
+        temp_request.user.password.randomise(config.password_policy)
+        password = temp_request.user.password.get()
+        config.temp_access_requests.add(temp_request)
+    else:
+        temp_request.update(requested_by, requested_id, requested_days)
+        password = temp_request.user.password.get()
+
+    print(f"DEBUG: The password for {username} is: {password}")
+
+    config.save()
+
+    # Push password change to cameras
+    enforce_passwords(config, username)
+
+    return password
+
+def check_temp_access_expired(config: config_manager.Config):
+    # Check for expired accounts and expire
+    access_removed = config.temp_access_requests.remove_expired(config.password_policy)
+
+    config.save()
+
+    # Push password change to cameras if there was any changes
+    if access_removed:
+        enforce_accounts(config)
+
+def remove_temp_access(config: config_manager.Config, username):
+    if config.temp_access_requests.exists(username):
+        config.temp_access_requests.remove(username)
 
 # config = config_manager.Config()
 # config.load()

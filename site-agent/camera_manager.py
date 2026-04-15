@@ -28,11 +28,6 @@ def scan_camera(camera, admin_user: list[str]):
 
     # Get hostname
     camera.hostname = camera_conn.get_hostname()
-    camera_name = str(camera.camera_name).lower().replace(" ", "-")
-    camera_name = ''.join(c for c in camera_name if c.isalnum() or c == '-')
-    if getattr(camera, "camera_name", None) and camera.hostname != camera_name:
-        camera_conn.set_hostname(camera_name)
-        camera.hostname = camera_conn.get_hostname()
 
     # Get Manufacture and Model
     device_info = camera_conn.get_device_info()
@@ -42,12 +37,37 @@ def scan_camera(camera, admin_user: list[str]):
     camera.firmware_version = device_info.FirmwareVersion
 
     # Get Network Information
+    dns = camera_conn.get_dns()
+    protocols = camera_conn.get_network_protocols()
     for network_if in camera_conn.get_network_interfaces():
-        net_info = config_manager.NetworkInformation()
+        interface_name = network_if.Info.Name
+        existing = next((ni for ni in camera.network_information if ni.interface == interface_name), None)
+        if existing:
+            net_info = existing
+        else:
+            net_info = config_manager.NetworkInformation()
+            camera.network_information.append(net_info)
         net_info.load(network_if)
-        net_info.dns.load(camera_conn.get_dns())
-        net_info.protocols.load(camera_conn.get_network_protocols())
-        camera.network_information.append(net_info)
+        net_info.dns.load(dns)
+        net_info.protocols.load(protocols)
+
+    # Get Configured Users and User Levels, start fresh each time to avoid issues with deleted users
+    camera.users.clear()
+    users = camera_conn.get_users()
+    for user in users:
+        existing = next((u for u in camera.users if u.username == user.Username), None)
+        if existing:
+            cam_user = existing
+        else:
+            cam_user = config_manager.CameraUser()
+            camera.users.append(cam_user)
+        cam_user.username = user.Username
+        cam_user.user_level = user.UserLevel
+
+    # Get Date/Time and NTP settings
+    date_time = camera_conn.get_date_time()
+    ntp_settings = camera_conn.get_ntp_settings()
+    camera.date_time.load(date_time, ntp_settings)
 
     # Set last seen and last updted tmie
     camera.last_seen = datetime.now(timezone.utc)
@@ -128,18 +148,54 @@ def remove_stale_cameras(config):
     for camera in stale_cameras:
         config.cameras.remove(camera.serial_number)
 
+def configure_camera(config: config_manager.Config):
+    for camera in config.cameras:
+        if camera.online():
+            reboot_required = False
+
+            print(f"Camera {camera.hostname} is online, configuring")
+            # Find admin account in list of approved accounts
+            camera_model = config.camera_models.get_model(camera.onvif_model)
+            if camera_model is None:
+                raise ValueError(f"Unknown camera model {camera.onvif_model}, cannot determine management account.")
+            user = config.approved_accounts.get(camera_model.management_account)
+            if user is None:
+                raise ValueError(f"Camera management account {camera_model.management_account} does not exist in approved accounts.")
+
+            # Logon to camera
+            try:
+                camera_conn = onvif_manager.DeviceManagement(camera, user)
+            except ValueError: # Failed to logon to camera
+                return 1
+
+            # Set hostname
+            camera_name = str(camera.camera_name).lower().replace(" ", "-")
+            camera_name = ''.join(c for c in camera_name if c.isalnum() or c == '-')
+            if getattr(camera, "camera_name", None) and camera.hostname != camera_name:
+                camera_conn.set_hostname(camera_name)
+                camera.hostname = camera_conn.get_hostname()
+
+            # Set NTP Settings
+            camera_conn.set_ntp_settings(config.ntp.servers, config.ntp.timezone)
+            
+            # Get offset between camera time and NTP server time
+            camera.date_time.camera_time = camera_conn.get_date_time()
+            camera.date_time.get_offset_seconds()
 
 
+            # If time offset is more than reboot_offset_seconds, then reboot camera to update time
+            if ((camera.date_time.seconds_offset < config.ntp.reboot_offset_seconds * -1 or
+                camera.date_time.seconds_offset > config.ntp.reboot_offset_seconds) and
+                config.ntp.reboot_if_offset_exceeded):
+                reboot_required = True  
 
-config = config_manager.Config()
-config.load()
-detect(config)
-scan_existing(config)
-remove_stale_cameras(config)
 
-config.save()
+            # If reboot required, then reboot camera
+            if reboot_required:
+                print(f"Camera {camera.hostname} requires reboot to update time, rebooting")
+                camera_conn.reboot()
 
-print("here")
+        else:
+            print(f"Camera {camera.hostname} is offline")
 
-#enforce_accounts(config)
-#enforce_passwords(config)
+

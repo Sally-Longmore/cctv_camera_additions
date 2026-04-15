@@ -10,7 +10,6 @@ class DeviceManagementConnection(OnVif):
     sub_xaddr = "device_service"
     port = "DeviceBinding"
 
-
 class DeviceManagement():
 
     def __init__(self, camera, user = None):
@@ -139,14 +138,14 @@ class DeviceManagement():
     def get_ntp_settings(self):
         return self.connection.ws_client.GetNTP()
 
-    def set_ntp_settings(self, ntp_server, ntp_port):
-        return self.connection.ws_client.SetNTP(NTPInformation=self.connection.factory.NTPInformation(
-            NTPFromDHCP=False,
-            NTPManual=[self.connection.factory.NTPManualType(
-                Type="IPv4",
-                IPv4Address=ntp_server
-            )]
-        ))
+    def set_ntp_settings(self, servers: list[str], timezone: str):
+        ntp_manual = [self.connection.factory.NetworkHost(Type="IPv4", IPv4Address=s) for s in servers]
+        self.connection.ws_client.SetNTP(FromDHCP=False, NTPManual=ntp_manual)
+        self.connection.ws_client.SetSystemDateAndTime(
+            DateTimeType="NTP",
+            DaylightSavings=False,
+            TimeZone=self.connection.factory.TimeZone(TZ=timezone)
+        )
 
     def get_date_time(self):
         return self.connection.ws_client.GetSystemDateAndTime()
@@ -169,3 +168,9 @@ class DeviceManagement():
     # -- Camera System Functions --
     def reboot(self):
         return self.connection.ws_client.SystemReboot()
+    
+class MediaConnection(OnVif):
+    namespace = "http://www.onvif.org/ver10/media/wsdl"
+    wsdl_file = getWSDLPath("media-10.wsdl")
+    sub_xaddr = "media_service"
+    port = "MediaBinding"

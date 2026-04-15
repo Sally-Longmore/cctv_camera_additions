@@ -117,13 +117,13 @@ class Password:
     def get_original(self):
         return self._password
 
-    def randomise(self):
+    def randomise(self, password_policy: 'PasswordPolicy'):
         self._password = crypto.generate_password(
-            length = config.password_policy.length,
-            uppercase = config.password_policy.uppercase,
-            lowercase = config.password_policy.lowercase,
-            digits = config.password_policy.digits,
-            special_chars = config.password_policy.special_chars
+            length = password_policy.length,
+            uppercase = password_policy.uppercase,
+            lowercase = password_policy.lowercase,
+            digits = password_policy.digits,
+            special_chars = password_policy.special_chars
         )
     
     def __repr__(self) -> str:
@@ -270,8 +270,8 @@ class TempAccess:
     def get_user(self) -> User:
         return self.user
 
-    def add(self, user: User, requested_by: str, requested_id: str, req_days: int):
-        if req_days > 5:
+    def add(self, user: User, requested_by: str, requested_id: str, requested_days: int):
+        if requested_days > 5:
             raise ValueError("Temp access cannot exceed 5 days")
         
         if user.temp_access == False:
@@ -281,7 +281,16 @@ class TempAccess:
         self.requested_by = requested_by
         self.requested_id = requested_id
         self.requested_time = datetime.now(timezone.utc)
-        self.expiry = self.requested_time + timedelta(days=req_days)
+        self.expiry = self.requested_time + timedelta(days=requested_days)
+
+    def update(self, requested_by: str, requested_id: str, requested_days: int):
+        if requested_days > 5:
+            raise ValueError("Temp access cannot exceed 5 days")
+        
+        self.requested_by = requested_by
+        self.requested_id = requested_id
+        self.requested_time = datetime.now(timezone.utc)
+        self.expiry = self.requested_time + timedelta(days=requested_days)
 
     def check_expired(self) -> bool:
         return datetime.now(timezone.utc) > self.expiry
@@ -326,11 +335,18 @@ class TempAccessRequests:
     def count(self):
         return self._requests.count()
     
-    def remove_expired(self):
-        for request in self._requests:
+    def remove_expired(self, password_policy: 'PasswordPolicy'):
+        accounts_removed = 0
+        for request in list(self._requests):
             if request.check_expired():
-                request.user.randomise_password()
+                request.user.password.randomise(password_policy)
                 self._requests.remove(request)
+                accounts_removed += 1
+        if accounts_removed > 0:
+            return True
+        else:
+            return False
+
 
     def __getitem__(self, index: int):
         return self._requests[index]
@@ -471,6 +487,95 @@ class NetworkInformation:
             "protocols": self.protocols.save()
         }
 
+class NTPSettings:
+    def __init__(self):
+        self.servers: list[str] = []
+        self.timezone = None
+        self.reboot_offset_seconds = None
+        self.reboot_if_offset_exceeded = None
+
+    def load(self, ntp_json: dict):
+        self.servers = ntp_json.get("servers", [])
+        self.timezone = ntp_json.get("timezone")
+        self.reboot_offset_seconds = ntp_json.get("reboot_offset_seconds")
+        self.reboot_if_offset_exceeded = ntp_json.get("reboot_if_offset_exceeded")
+
+    def save(self) -> dict:
+        return {
+            "servers": self.servers,
+            "timezone": self.timezone,
+            "reboot_offset_seconds": self.reboot_offset_seconds,
+            "reboot_if_offset_exceeded": self.reboot_if_offset_exceeded
+        }
+
+class CameraDateTime:
+    def __init__(self):
+        self.date_time_type = None   # "NTP" or "Manual"
+        self.ntp_from_dhcp = None
+        self.ntp_servers: list[str] = []
+        self.timezone = None
+        self.camera_time: datetime = None      # datetime as reported by camera
+        self.seconds_offset = None   # seconds ahead (+) or behind (-) of system time
+
+    def load(self, date_time, ntp):
+        dt = getattr(date_time, 'UTCDateTime', None)
+        if dt:
+            t = dt.Time
+            d = dt.Date
+            self.camera_time = datetime(d.Year, d.Month, d.Day, t.Hour, t.Minute, t.Second, tzinfo=timezone.utc)
+            self.seconds_offset = round((self.camera_time - datetime.now(timezone.utc)).total_seconds())
+        self.date_time_type = getattr(date_time, 'DateTimeType', None)
+        tz = getattr(date_time, 'TimeZone', None)
+        self.timezone = getattr(tz, 'TZ', None) if tz else None
+        if ntp:
+            self.ntp_from_dhcp = getattr(ntp, 'FromDHCP', None)
+            manual = getattr(ntp, 'NTPManual', None) or []
+            self.ntp_servers = [
+                getattr(s, 'IPv4Address', None) or getattr(s, 'IPv6Address', None) or getattr(s, 'DNSname', None)
+                for s in manual
+            ]
+
+    def save(self) -> dict:
+        return {
+            "date_time_type": self.date_time_type,
+            "ntp_from_dhcp": self.ntp_from_dhcp,
+            "ntp_servers": self.ntp_servers,
+            "timezone": self.timezone,
+            "camera_time": self.camera_time.isoformat() if self.camera_time else None,
+            "seconds_offset": self.seconds_offset
+        }
+    
+    def set_camera_time(self, date_time):
+        dt = getattr(date_time, 'UTCDateTime', None)
+        if dt:
+            t = dt.Time
+            d = dt.Date
+            self.camera_time = datetime(d.Year, d.Month, d.Day, t.Hour, t.Minute, t.Second, tzinfo=timezone.utc)
+            self.seconds_offset = round((self.camera_time - datetime.now(timezone.utc)).total_seconds())
+
+    def load_json(self, data: dict):
+        self.date_time_type = data.get("date_time_type")
+        self.ntp_from_dhcp = data.get("ntp_from_dhcp")
+        self.ntp_servers = data.get("ntp_servers", [])
+        self.timezone = data.get("timezone")
+        self.camera_time = datetime.fromisoformat(data["camera_time"]) if data.get("camera_time") else None
+        self.seconds_offset = data.get("seconds_offset")
+
+class CameraUser:
+    def __init__(self):
+        self.username = None
+        self.user_level = None
+
+    def load(self, user_json: dict):
+        self.username = user_json.get("username")
+        self.user_level = user_json.get("user_level")
+
+    def save(self) -> dict:
+        return {
+            "username": self.username,
+            "user_level": self.user_level
+        }
+
 # Class used to store Cameras
 class Camera:
     def __init__(self):
@@ -484,6 +589,8 @@ class Camera:
         self.hostname = None
         self.camera_name = None
         self.network_information: list[NetworkInformation] = []
+        self.date_time = CameraDateTime()
+        self.users: list[CameraUser] = []
         self.last_seen = None
         self.last_updated = None
 
@@ -497,6 +604,11 @@ class Camera:
         self.firmware_version = camera_json.get("firmware_version")
         self.hostname = camera_json.get("hostname")
         self.camera_name = camera_json.get("camera_name")
+        if camera_json.get("date_time"):
+            self.date_time.load_json(camera_json["date_time"])
+        self.users = [CameraUser() for _ in camera_json.get("users", [])]
+        for u, u_json in zip(self.users, camera_json.get("users", [])):
+            u.load(u_json)
         self.last_seen = datetime.fromisoformat(camera_json.get("last_seen")) if camera_json.get("last_seen") else None
         self.last_updated = datetime.fromisoformat(camera_json.get("last_updated")) if camera_json.get("last_updated") else None
 
@@ -512,7 +624,9 @@ class Camera:
             "camera_name": self.camera_name,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "last_updated": self.last_updated.isoformat() if self.last_updated else None,
-            "network_information": [ni.save() for ni in self.network_information]
+            "network_information": [ni.save() for ni in self.network_information],
+            "date_time": self.date_time.save(),
+            "users": [u.save() for u in self.users]
         }
         return camera_dict
 
@@ -608,7 +722,7 @@ class CameraModel:
         self.model = None
         self.model_line = None
         self.management_account = None
-        self.reboot_required_on_change = False
+        self.reboot_on_user_change = False
 
     def load(self, model_json: json):
         self.manufacturer = model_json.get("manufacturer")
@@ -616,7 +730,7 @@ class CameraModel:
         self.model = model_json.get("model")
         self.model_line = model_json.get("model_line")
         self.management_account = model_json.get("management_account")
-        self.reboot_required_on_change = model_json.get("reboot_required_on_change")
+        self.reboot_on_user_change = model_json.get("reboot_on_user_change")
 
     def save(self) -> dict:
         return {
@@ -625,7 +739,7 @@ class CameraModel:
             "model": self.model,
             "model_line": self.model_line,
             "management_account": self.management_account,
-            "reboot_required_on_change": self.reboot_required_on_change
+            "reboot_on_user_change": self.reboot_on_user_change
         }
 
 class CameraModels:
@@ -661,6 +775,7 @@ class Config:
     def __init__(self):
         self.password_policy = PasswordPolicy()
         self.site = Site()
+        self.ntp = NTPSettings()
         self.approved_accounts = ApprovedAccounts()
         self.temp_access_requests = TempAccessRequests()
         self.cameras = Cameras()
@@ -686,6 +801,10 @@ class Config:
                 
                 # Load Site
                 self.site.load(json_data["site"])
+
+                # Load NTP Settings
+                if json_data.get("ntp"):
+                    self.ntp.load(json_data["ntp"])
 
                 # Load Approved Accounts
                 for user_json in json_data["approved_accounts"]:
@@ -723,6 +842,7 @@ class Config:
             json_string = json.dumps({
                 "password_policy": self.password_policy.save(),
                 "site": self.site.save(),
+                "ntp": self.ntp.save(),
                 "approved_accounts": [user.save() for user in self.approved_accounts],
                 "temp_access": [request.save() for request in self.temp_access_requests],
                 "cameras": [camera.save() for camera in self.cameras],
